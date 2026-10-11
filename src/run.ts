@@ -7,7 +7,13 @@ import type { Attachment, Candidate } from "./types";
 import { writeDigest, type ParseFn } from "./writer";
 
 const MAX_IMAGES_PER_ITEM = 4;
-const FIRST_RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Keeps one message's upload and the run's memory well inside Discord and Workers limits.
+const MAX_IMAGE_BYTES_PER_ITEM = 20 * 1024 * 1024;
+const MAX_CANDIDATES = 40;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const FIRST_RUN_WINDOW_MS = DAY_MS;
+// After a long outage, start from last week rather than replaying everything.
+const MAX_WINDOW_MS = 7 * DAY_MS;
 
 export interface Deps {
   fetchFn: typeof fetch;
@@ -36,7 +42,9 @@ async function candidatesSince(deps: Deps, since: Date): Promise<Candidate[]> {
   const members = new MembershipChecker(deps.fetchFn, deps.githubToken, deps.org);
   const candidates: Candidate[] = [];
   for (const pull of pulls) {
-    if (!isEligible(pull, since, featured)) continue;
+    if (candidates.length === MAX_CANDIDATES) break;
+    // A deleted account has no login, and no way to check membership.
+    if (!pull.author || !isEligible(pull, since, featured)) continue;
     // Anyone can open a pull request on a public repo; only the team's reach the model.
     if (!(await members.isMember(pull.author))) continue;
     candidates.push({ ...pull, screenshots: extractScreenshots(pull.body) });
@@ -52,7 +60,9 @@ async function candidatesSince(deps: Deps, since: Date): Promise<Candidate[]> {
  * the closing message.
  */
 export async function runDigest(deps: Deps): Promise<RunResult> {
-  const since = (await getLastPostAt(deps.kv)) ?? new Date(deps.now.getTime() - FIRST_RUN_WINDOW_MS);
+  const earliest = new Date(deps.now.getTime() - MAX_WINDOW_MS);
+  const last = await getLastPostAt(deps.kv);
+  const since = last ? (last < earliest ? earliest : last) : new Date(deps.now.getTime() - FIRST_RUN_WINDOW_MS);
   const candidates = await candidatesSince(deps, since);
   if (candidates.length === 0) {
     if (deps.recordProgress) await setLastPostAt(deps.kv, deps.now);
@@ -70,10 +80,13 @@ export async function runDigest(deps: Deps): Promise<RunResult> {
   for (const item of plan.items) {
     // A screenshot that fails to download is skipped and the next one takes its place.
     const images: Attachment[] = [];
+    let bytes = 0;
     for (const url of byNumber.get(item.prNumber)?.screenshots ?? []) {
       if (images.length === MAX_IMAGES_PER_ITEM) break;
       const image = await downloadImage(deps.fetchFn, url, `screenshot-${images.length + 1}`);
-      if (image) images.push(image);
+      if (!image || bytes + image.bytes.byteLength > MAX_IMAGE_BYTES_PER_ITEM) continue;
+      bytes += image.bytes.byteLength;
+      images.push(image);
     }
     messages.push({ ...item, images });
   }

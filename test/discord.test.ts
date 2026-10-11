@@ -39,4 +39,21 @@ describe("postMessage", () => {
     const { fetchFn } = capture(400);
     await expect(postMessage(fetchFn, "https://discord.test/hook", "hi", [])).rejects.toThrow();
   });
+
+  it("waits and retries when Discord rate limits", async () => {
+    const statuses = [429, 204];
+    const waits: number[] = [];
+    const fetchFn = (async () => {
+      const status = statuses.shift()!;
+      return status === 429 ? Response.json({ retry_after: 1.5 }, { status }) : new Response(null, { status });
+    }) as typeof fetch;
+    await postMessage(fetchFn, "https://discord.test/hook", "hi", [], async (ms) => void waits.push(ms));
+    expect(waits).toEqual([1500]);
+    expect(statuses).toEqual([]);
+  });
+
+  it("gives up after repeated rate limits", async () => {
+    const fetchFn = (async () => Response.json({ retry_after: 0.1 }, { status: 429 })) as typeof fetch;
+    await expect(postMessage(fetchFn, "https://discord.test/hook", "hi", [], async () => {})).rejects.toThrow();
+  });
 });

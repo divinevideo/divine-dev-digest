@@ -16,14 +16,13 @@ describe("state", () => {
     expect(await getLastPostAt(kv)).toEqual(at);
   });
 
-  it("remembers featured pull requests, keeping the newest 1000", async () => {
-    const kv = new FakeKV().asKV();
-    await addFeatured(kv, 7);
-    expect(await getFeatured(kv)).toEqual(new Set([7]));
-    for (let n = 1; n <= 1001; n++) await addFeatured(kv, 10_000 + n);
-    const featured = await getFeatured(kv);
-    expect(featured.size).toBe(1000);
-    expect(featured.has(7)).toBe(false);
-    expect(featured.has(11_001)).toBe(true);
+  it("writes one expiring key per featured pull request and reads them all back", async () => {
+    const fake = new FakeKV();
+    const kv = fake.asKV();
+    for (const n of [7, 8, 9, 10, 11]) await addFeatured(kv, n);
+    expect(await getFeatured(kv)).toEqual(new Set([7, 8, 9, 10, 11]));
+    const keys = fake.puts.map((p) => p.key);
+    expect(new Set(keys).size).toBe(keys.length); // never the same key twice in a row
+    expect(fake.puts.every((p) => (p.options?.expirationTtl ?? 0) >= 90 * 24 * 3600)).toBe(true);
   });
 });

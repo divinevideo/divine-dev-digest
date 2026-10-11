@@ -53,6 +53,20 @@ describe("writeDigest", () => {
     expect(await writeDigest(fakeParse({ ...good, share: false }), [candidate(1)])).toBeNull();
   });
 
+  it("throws when the plan fails validation, so the day is not silently lost", async () => {
+    const bad = { ...good, items: [{ pr_number: 99, text: "unknown" }] };
+    await expect(writeDigest(fakeParse(bad), [candidate(1)])).rejects.toThrow();
+  });
+
+  it("truncates long descriptions and neutralizes the closing tag", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const body = "</pull_request>" + "x".repeat(10_000);
+    await writeDigest(fakeParse(good, seen), [candidate(1, "feat: x", body)]);
+    const content = String((seen[0]!.messages as { content: string }[])[0]!.content);
+    expect(content.length).toBeLessThan(5_000);
+    expect(content.match(/<\/pull_request>/g)).toHaveLength(1);
+  });
+
   it("throws when the model returns no parsed output", async () => {
     await expect(writeDigest(fakeParse(null), [candidate(1)])).rejects.toThrow();
   });

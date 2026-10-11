@@ -7,6 +7,7 @@ export const MODEL = "claude-sonnet-5";
 const MAX_ITEMS = 5;
 const MAX_TEXT = 2000;
 const FORBIDDEN = /https?:\/\/|github\.com|#\d+/i;
+const MAX_BODY = 4000;
 
 const DigestSchema = z.object({
   share: z.boolean(),
@@ -31,14 +32,19 @@ Write:
 
 If nothing would matter to someone using the app, set share to false.`;
 
+/** Keep pull request text from closing or opening its own data tag. */
+function dataText(text: string): string {
+  return text.replace(/<\/?pull_request/gi, "&lt;pull_request");
+}
+
 function describe(candidate: Candidate): string {
   const status = candidate.mergedAt ? "finished" : "still being explored";
   return `<pull_request number="${candidate.number}">
 Status: ${status}
 Screenshots: ${candidate.screenshots.length}
-Title: ${candidate.title}
+Title: ${dataText(candidate.title)}
 Description:
-${candidate.body}
+${dataText(candidate.body.slice(0, MAX_BODY))}
 </pull_request>`;
 }
 
@@ -72,7 +78,7 @@ export function validatePlan(raw: unknown, candidates: Candidate[]): DigestPlan 
 
 /**
  * Turn eligible pull requests into the day's update. Null means nothing is
- * worth sharing. A missing or malformed model response throws, so the run
+ * worth sharing. A missing, malformed, or unusable model response throws, so the run
  * posts nothing and the next day covers this one.
  */
 export async function writeDigest(parse: ParseFn, candidates: Candidate[]): Promise<DigestPlan | null> {
@@ -86,5 +92,8 @@ export async function writeDigest(parse: ParseFn, candidates: Candidate[]): Prom
   const output = DigestSchema.safeParse(response.parsed_output);
   if (!output.success) throw new Error("Model returned no usable digest");
   if (!output.data.share) return null;
-  return validatePlan(output.data, candidates);
+  const plan = validatePlan(output.data, candidates);
+  // Throwing keeps the window open, so tomorrow's run covers today.
+  if (!plan) throw new Error("Model digest failed validation");
+  return plan;
 }

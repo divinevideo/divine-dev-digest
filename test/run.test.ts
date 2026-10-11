@@ -13,7 +13,7 @@ function apiPull(p: Pull) {
     number: p.number,
     title: p.title ?? `feat: thing ${p.number}`,
     body: p.body ?? "",
-    user: { login: p.author },
+    user: p.author ? { login: p.author } : null,
     draft: false,
     state: p.merged ? "closed" : "open",
     merged_at: p.merged ? "2026-10-11T10:00:00Z" : null,
@@ -22,6 +22,7 @@ function apiPull(p: Pull) {
 }
 
 interface World {
+  imageBytes?: number;
   pulls: Pull[];
   members: string[];
   failMembership?: boolean;
@@ -38,12 +39,14 @@ function harness(world: World, output: unknown) {
     if (url.includes("/pulls?")) return Response.json(world.pulls.map(apiPull));
     if (url.includes("/members/")) {
       if (world.failMembership) return new Response(null, { status: 500 });
+      // An empty login hits the member list endpoint, which answers 200.
+      if (url.endsWith("/members/")) return Response.json([]);
       return new Response(null, { status: world.members.includes(url.split("/").pop()!) ? 204 : 404 });
     }
     if (url.includes("user-attachments")) {
       events.push(`download ${url.split("/").pop()}`);
       if (world.failImages?.some((id) => url.endsWith(id))) return new Response(null, { status: 404 });
-      return new Response(new Uint8Array(3), { headers: { "content-type": "image/png" } });
+      return new Response(new Uint8Array(world.imageBytes ?? 3), { headers: { "content-type": "image/png" } });
     }
     if (url === "https://discord.test/hook") {
       const form = init?.body as FormData;
@@ -102,7 +105,7 @@ describe("runDigest", () => {
       { text: "Tell us what you think!", files: [] },
     ]);
     expect(h.kv.store.get("last_post_at")).toBe(NOW.toISOString());
-    expect(JSON.parse(h.kv.store.get("featured")!)).toEqual([1, 2]);
+    expect([...h.kv.store.keys()].filter((k) => k.startsWith("featured:")).sort()).toEqual(["featured:1", "featured:2"]);
   });
 
   it("downloads every image before posting anything, dropping a failed one", async () => {
@@ -152,7 +155,7 @@ describe("runDigest", () => {
     const h = harness({ pulls: [designWork, merged], members: ["Chardot", "dev"], failPostAt: 2 }, plan([1, 2]));
     await expect(runDigest(h.deps)).rejects.toThrow();
     expect(h.posts.map((p) => p.text)).toEqual(["Hello!", "Item 1"]);
-    expect(JSON.parse(h.kv.store.get("featured")!)).toEqual([1]);
+    expect([...h.kv.store.keys()].filter((k) => k.startsWith("featured:"))).toEqual(["featured:1"]);
     expect(h.kv.store.get("last_post_at")).toBeUndefined();
   });
 
@@ -173,5 +176,32 @@ describe("runDigest", () => {
     expect(await runDigest(h.deps)).toEqual({ status: "posted", items: 2 });
     expect(h.posts).toHaveLength(4);
     expect(h.kv.store.size).toBe(0);
+  });
+
+  it("caps the images in one item at 20 MB in total", async () => {
+    const h = harness({ pulls: [designWork], members: ["Chardot"], imageBytes: 7 * 1024 * 1024 }, plan([1]));
+    await runDigest(h.deps);
+    expect(h.posts[1]?.files).toHaveLength(2);
+  });
+
+  it("gives the model at most 40 candidates, newest first", async () => {
+    const many: Pull[] = Array.from({ length: 50 }, (_, i) => ({ number: 100 + i, author: "dev", merged: true }));
+    const h = harness({ pulls: many, members: ["dev"] }, plan([100]));
+    await runDigest(h.deps);
+    expect(h.seenCandidates[0]).toHaveLength(40);
+    expect(h.seenCandidates[0]?.[0]).toBe(100);
+  });
+
+  it("never looks back more than 7 days", async () => {
+    const h = harness({ pulls: [merged], members: ["dev"] }, plan([2]));
+    await h.kv.put("last_post_at", "2026-09-01T00:00:00Z");
+    h.deps.now = new Date("2026-10-19T00:00:00Z"); // the 10:00 merge on the 11th is 7.6 days back
+    expect(await runDigest(h.deps)).toEqual({ status: "skipped", reason: "no-candidates" });
+  });
+
+  it("skips pull requests whose author account is gone", async () => {
+    const ghost: Pull = { number: 9, author: "", merged: true };
+    const h = harness({ pulls: [ghost, merged], members: ["dev"] }, plan([2]));
+    expect(await runDigest(h.deps)).toEqual({ status: "posted", items: 1 });
   });
 });

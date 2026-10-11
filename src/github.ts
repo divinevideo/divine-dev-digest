@@ -1,6 +1,8 @@
 import type { PullRequest } from "./types";
 
 const API = "https://api.github.com";
+// 500 pull requests is far more than a day produces; a long outage must not grow unbounded.
+const MAX_PAGES = 5;
 
 interface ApiPull {
   number: number;
@@ -29,7 +31,7 @@ export async function listUpdatedPulls(
   since: Date,
 ): Promise<PullRequest[]> {
   const pulls: PullRequest[] = [];
-  for (let page = 1; ; page++) {
+  for (let page = 1; page <= MAX_PAGES; page++) {
     const url = `${API}/repos/${repo}/pulls?state=all&sort=updated&direction=desc&per_page=100&page=${page}`;
     const response = await fetchFn(url, { headers: headers(token) });
     if (!response.ok) throw new Error(`GitHub pull list failed with ${response.status}`);
@@ -49,6 +51,7 @@ export async function listUpdatedPulls(
     }
     if (batch.length < 100) return pulls;
   }
+  return pulls;
 }
 
 /**
@@ -74,7 +77,9 @@ export class MembershipChecker {
     });
     let member: boolean;
     if (response.status === 204) member = true;
-    else if (response.status === 404 || response.status === 302) member = false;
+    else if (response.status === 404) member = false;
+    // 302 means the token's owner is not an org member, so it cannot see anyone's membership.
+    else if (response.status === 302) throw new Error("GITHUB_TOKEN cannot read divinevideo org members");
     else throw new Error(`GitHub membership check failed with ${response.status}`);
     this.cache.set(login, member);
     return member;

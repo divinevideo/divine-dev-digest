@@ -72,14 +72,11 @@ describe("listUpdatedPulls", () => {
 });
 
 describe("MembershipChecker", () => {
-  it("treats 204 as a member and 404 or 302 as not", async () => {
-    const { fetchFn, calls } = routes((url) =>
-      new Response(null, { status: url.endsWith("/in") ? 204 : url.endsWith("/out") ? 404 : 302 }),
-    );
+  it("treats 204 as a member and 404 as not", async () => {
+    const { fetchFn, calls } = routes((url) => new Response(null, { status: url.endsWith("/in") ? 204 : 404 }));
     const checker = new MembershipChecker(fetchFn, "tok", "divinevideo");
     expect(await checker.isMember("in")).toBe(true);
     expect(await checker.isMember("out")).toBe(false);
-    expect(await checker.isMember("redirected")).toBe(false);
     expect(calls[0]?.url).toBe("https://api.github.com/orgs/divinevideo/members/in");
     expect(calls[0]?.init.redirect).toBe("manual");
   });
@@ -96,4 +93,19 @@ describe("MembershipChecker", () => {
     await checker.isMember("x");
     expect(calls).toHaveLength(1);
   });
+
+describe("token problems", () => {
+  it("throws on 302, which means the token cannot see org members", async () => {
+    const { fetchFn } = routes(() => new Response(null, { status: 302 }));
+    await expect(new MembershipChecker(fetchFn, "tok", "o").isMember("x")).rejects.toThrow(/token/i);
+  });
+
+  it("stops after five pages", async () => {
+    const full = Array.from({ length: 100 }, (_, i) => apiPull(i, "2026-10-11T12:00:00Z"));
+    const { fetchFn, calls } = routes(() => Response.json(full));
+    const pulls = await listUpdatedPulls(fetchFn, "tok", "o/r", since);
+    expect(calls).toHaveLength(5);
+    expect(pulls).toHaveLength(500);
+  });
+});
 });
