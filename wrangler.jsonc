@@ -1,0 +1,15 @@
+{
+  "name": "divine-dev-digest",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": { "crons": ["0 16 * * *"] },
+  "kv_namespaces": [
+    // Create with `npx wrangler kv namespace create DIGEST_STATE` and paste the id.
+    { "binding": "DIGEST_STATE", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ],
+  "vars": {
+    "SOURCE_REPO": "divinevideo/divine-mobile",
+    "ORG": "divinevideo"
+  }
+}
